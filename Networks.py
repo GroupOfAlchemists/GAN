@@ -123,7 +123,7 @@ class GeneratorUpsampleBlock(nn.Module):
           y = self.Resampler(self.NonLinearity2(y))
           
           y = self.LinearLayer3(y)
-          y = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False) + y
+          y = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False, antialias=False) + y
           
           return y, self.NonLinearity3(y)
 
@@ -152,7 +152,7 @@ class DiscriminatorDownsampleBlock(nn.Module):
           y = self.NonLinearity3(self.LinearLayer2(y))
           y = self.LinearLayer3(y)
           
-          x = nn.functional.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=False, recompute_scale_factor=True)
+          x = nn.functional.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=False, antialias=False, recompute_scale_factor=True)
           if hasattr(self, 'ShortcutLayer'):
               x = self.ShortcutLayer(x)
 
@@ -275,7 +275,7 @@ class Generator(nn.Module):
 
         for Layer, Aggregate in zip(self.MainLayers, self.AggregationLayers):
             y, ActivationMaps = Layer(y, ActivationMaps)
-            AggregatedOutput = nn.functional.interpolate(AggregatedOutput, scale_factor=2, mode='bilinear', align_corners=False) + Aggregate(ActivationMaps)
+            AggregatedOutput = nn.functional.interpolate(AggregatedOutput, scale_factor=2, mode='bilinear', align_corners=False, antialias=False) + Aggregate(ActivationMaps)
         
         return AggregatedOutput
 
