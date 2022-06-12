@@ -1,7 +1,7 @@
 import math
-import numpy
 import torch
 import torch.nn as nn
+from Resamplers import InterpolativeUpsampler, InterpolativeDownsampler, InplaceUpsampler, InplaceDownsampler
 
 def MSRInitializer(Layer, ActivationGain=1):
     FanIn = Layer.weight.data.size(1) * Layer.weight.data[0][0].numel()
@@ -14,6 +14,7 @@ def MSRInitializer(Layer, ActivationGain=1):
 
 class BiasedActivation(nn.Module):
     Gain = math.sqrt(2)
+    Function = nn.functional.silu
     
     def __init__(self, InputUnits, ConvolutionalLayer=True):
         super(BiasedActivation, self).__init__()
@@ -25,7 +26,7 @@ class BiasedActivation(nn.Module):
         
     def forward(self, x):
         y = x + self.Bias.view(1, -1, 1, 1) if self.ConvolutionalLayer else x + self.Bias.view(1, -1)
-        return nn.functional.silu(y)
+        return BiasedActivation.Function(y)
 
 class GeneratorBlock(nn.Module):
       def __init__(self, InputChannels, CompressionFactor, ReceptiveField):
@@ -38,12 +39,11 @@ class GeneratorBlock(nn.Module):
           
           self.NonLinearity1 = BiasedActivation(CompressedChannels)
           self.NonLinearity2 = BiasedActivation(InputChannels)
-
+          
       def forward(self, x, ActivationMaps):
           y = self.LinearLayer1(ActivationMaps)
-          y = self.NonLinearity1(y)
+          y = self.LinearLayer2(self.NonLinearity1(y))
           
-          y = self.LinearLayer2(y)
           y = x + y
           
           return y, self.NonLinearity2(y)
@@ -66,38 +66,8 @@ class DiscriminatorBlock(nn.Module):
           
           return x + y
 
-def CreateLowpassKernel():
-    Kernel = numpy.array([[1., 2., 1.]])
-    Kernel = torch.Tensor(Kernel.T @ Kernel)
-    Kernel = Kernel / torch.sum(Kernel)
-    return Kernel.view(1, 1, Kernel.shape[0], Kernel.shape[1])
-
-class Upsampler(nn.Module):
-      def __init__(self):
-          super(Upsampler, self).__init__()
-          
-          self.register_buffer('Kernel', CreateLowpassKernel())
-          
-      def forward(self, x):
-          x = nn.functional.pixel_shuffle(x, 2)
-          y = nn.functional.pad(x, (1, 1, 1, 1), mode='reflect')
-          
-          return nn.functional.conv2d(y.view(y.shape[0] * y.shape[1], 1, y.shape[2], y.shape[3]), self.Kernel, stride=1).view(*x.shape)
-          
-class Downsampler(nn.Module):
-      def __init__(self):
-          super(Downsampler, self).__init__()
-          
-          self.register_buffer('Kernel', CreateLowpassKernel())
-          
-      def forward(self, x):
-          y = nn.functional.pad(x, (1, 1, 1, 1), mode='reflect')
-          y = nn.functional.conv2d(y.view(y.shape[0] * y.shape[1], 1, y.shape[2], y.shape[3]), self.Kernel, stride=1).view(*x.shape)
-
-          return nn.functional.pixel_unshuffle(y, 2)
-
 class GeneratorUpsampleBlock(nn.Module):
-      def __init__(self, InputChannels, OutputChannels, CompressionFactor, ReceptiveField):
+      def __init__(self, InputChannels, OutputChannels, CompressionFactor, ReceptiveField, ResamplingFilter):
           super(GeneratorUpsampleBlock, self).__init__()
           
           CompressedChannels = InputChannels // CompressionFactor
@@ -107,10 +77,12 @@ class GeneratorUpsampleBlock(nn.Module):
           self.LinearLayer3 = MSRInitializer(nn.Conv2d(CompressedChannels, OutputChannels, kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, padding_mode='reflect', bias=False), ActivationGain=0)
           
           self.NonLinearity1 = BiasedActivation(CompressedChannels)
-          self.NonLinearity2 = BiasedActivation(CompressedChannels * 4)
+          self.NonLinearity2 = BiasedActivation(CompressedChannels)
           self.NonLinearity3 = BiasedActivation(OutputChannels)
           
-          self.Resampler = Upsampler()
+          self.MainResampler = InplaceUpsampler(ResamplingFilter)
+          self.ShortcutResampler = InterpolativeUpsampler(ResamplingFilter)
+          
           if InputChannels != OutputChannels:
               self.ShortcutLayer = MSRInitializer(nn.Conv2d(InputChannels, OutputChannels, kernel_size=1, stride=1, padding=0, bias=False))
 
@@ -119,16 +91,15 @@ class GeneratorUpsampleBlock(nn.Module):
               x = self.ShortcutLayer(x)
           
           y = self.LinearLayer1(ActivationMaps)
-          y = self.LinearLayer2(self.NonLinearity1(y))
-          y = self.Resampler(self.NonLinearity2(y))
+          y = self.MainResampler(self.LinearLayer2(self.NonLinearity1(y)))
+          y = self.LinearLayer3(self.NonLinearity2(y))
           
-          y = self.LinearLayer3(y)
-          y = nn.functional.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False, antialias=False) + y
+          y = self.ShortcutResampler(x) + y
           
           return y, self.NonLinearity3(y)
 
 class DiscriminatorDownsampleBlock(nn.Module):
-      def __init__(self, InputChannels, OutputChannels, CompressionFactor, ReceptiveField):
+      def __init__(self, InputChannels, OutputChannels, CompressionFactor, ReceptiveField, ResamplingFilter):
           super(DiscriminatorDownsampleBlock, self).__init__()
           
           CompressedChannels = OutputChannels // CompressionFactor
@@ -138,31 +109,31 @@ class DiscriminatorDownsampleBlock(nn.Module):
           self.LinearLayer3 = MSRInitializer(nn.Conv2d(CompressedChannels, OutputChannels, kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, padding_mode='reflect', bias=False), ActivationGain=0)
           
           self.NonLinearity1 = BiasedActivation(InputChannels)
-          self.NonLinearity2 = BiasedActivation(CompressedChannels * 4)
+          self.NonLinearity2 = BiasedActivation(CompressedChannels)
           self.NonLinearity3 = BiasedActivation(CompressedChannels)
           
-          self.Resampler = Downsampler()
+          self.MainResampler = InplaceDownsampler(ResamplingFilter)
+          self.ShortcutResampler = InterpolativeDownsampler(ResamplingFilter)
+          
           if InputChannels != OutputChannels:
               self.ShortcutLayer = MSRInitializer(nn.Conv2d(InputChannels, OutputChannels, kernel_size=1, stride=1, padding=0, bias=False))
           
       def forward(self, x):
           y = self.LinearLayer1(self.NonLinearity1(x))
+          y = self.LinearLayer2(self.MainResampler(self.NonLinearity2(y)))
+          y = self.LinearLayer3(self.NonLinearity3(y))
           
-          y = self.NonLinearity2(self.Resampler(y))
-          y = self.NonLinearity3(self.LinearLayer2(y))
-          y = self.LinearLayer3(y)
-          
-          x = nn.functional.interpolate(x, scale_factor=0.5, mode='bilinear', align_corners=False, antialias=True, recompute_scale_factor=True)
+          x = self.ShortcutResampler(x)
           if hasattr(self, 'ShortcutLayer'):
               x = self.ShortcutLayer(x)
 
           return x + y
      
 class GeneratorStage(nn.Module):
-      def __init__(self, InputChannels, OutputChannels, Blocks, CompressionFactor, ReceptiveField):
+      def __init__(self, InputChannels, OutputChannels, Blocks, CompressionFactor, ReceptiveField, ResamplingFilter):
           super(GeneratorStage, self).__init__()
           
-          self.BlockList = nn.ModuleList([GeneratorBlock(InputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)] + [GeneratorUpsampleBlock(InputChannels, OutputChannels, CompressionFactor, ReceptiveField)])
+          self.BlockList = nn.ModuleList([GeneratorBlock(InputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)] + [GeneratorUpsampleBlock(InputChannels, OutputChannels, CompressionFactor, ReceptiveField, ResamplingFilter)])
           
       def forward(self, x, ActivationMaps):
           for Block in self.BlockList:
@@ -170,10 +141,10 @@ class GeneratorStage(nn.Module):
           return x, ActivationMaps
           
 class DiscriminatorStage(nn.Module):
-      def __init__(self, InputChannels, OutputChannels, Blocks, CompressionFactor, ReceptiveField):
+      def __init__(self, InputChannels, OutputChannels, Blocks, CompressionFactor, ReceptiveField, ResamplingFilter):
           super(DiscriminatorStage, self).__init__()
 
-          self.BlockList = nn.ModuleList([DiscriminatorDownsampleBlock(InputChannels, OutputChannels, CompressionFactor, ReceptiveField)] + [DiscriminatorBlock(OutputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
+          self.BlockList = nn.ModuleList([DiscriminatorDownsampleBlock(InputChannels, OutputChannels, CompressionFactor, ReceptiveField, ResamplingFilter)] + [DiscriminatorBlock(OutputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
         
       def forward(self, x):
           for Block in self.BlockList:
@@ -250,7 +221,7 @@ def ToRGB(InputChannels, ResidualComponent=False):
     return MSRInitializer(nn.Conv2d(InputChannels, 3, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0 if ResidualComponent else 1)
 
 class Generator(nn.Module):
-    def __init__(self, NoiseDimension=512, LatentDimension=512, LatentMappingDepth=8, PrologWidth=1024, StageWidths=[1024, 512, 512, 512, 256, 256, 256, 128], BlocksPerStage=[2, 2, 2, 2, 2, 2, 2, 2], CompressionFactor=4, ReceptiveField=3):
+    def __init__(self, NoiseDimension=512, LatentDimension=512, LatentMappingDepth=8, PrologWidth=1024, StageWidths=[1024, 512, 512, 512, 256, 256, 256, 128], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Generator, self).__init__()
         
         self.LatentLayer = MappingBlock(NoiseDimension, LatentDimension, LatentMappingDepth // 2 - 1)
@@ -262,10 +233,11 @@ class Generator(nn.Module):
         AggregationLayers = []
         ExtendedStageWidths = [PrologWidth] + StageWidths
         for x in range(len(StageWidths)):
-            MainLayers += [GeneratorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField)]
+            MainLayers += [GeneratorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter)]
             AggregationLayers += [ToRGB(ExtendedStageWidths[x + 1], ResidualComponent=True)]    
         self.MainLayers = nn.ModuleList(MainLayers)
         self.AggregationLayers = nn.ModuleList(AggregationLayers)
+        self.Resampler = InterpolativeUpsampler(ResamplingFilter)
 
     def forward(self, z, EnableLatentMapping=True):
         w = self.LatentLayer(z) if EnableLatentMapping else z
@@ -275,12 +247,12 @@ class Generator(nn.Module):
 
         for Layer, Aggregate in zip(self.MainLayers, self.AggregationLayers):
             y, ActivationMaps = Layer(y, ActivationMaps)
-            AggregatedOutput = nn.functional.interpolate(AggregatedOutput, scale_factor=2, mode='bilinear', align_corners=False, antialias=False) + Aggregate(ActivationMaps)
+            AggregatedOutput = self.Resampler(AggregatedOutput) + Aggregate(ActivationMaps)
         
         return AggregatedOutput
 
 class Discriminator(nn.Module):
-    def __init__(self, LatentDimension=512, EpilogWidth=1024, StageWidths=[128, 256, 256, 256, 512, 512, 512, 1024], BlocksPerStage=[2, 2, 2, 2, 2, 2, 2, 2], CompressionFactor=4, ReceptiveField=3):
+    def __init__(self, LatentDimension=512, EpilogWidth=1024, StageWidths=[128, 256, 256, 256, 512, 512, 512, 1024], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Discriminator, self).__init__()
         
         self.FromRGB = MSRInitializer(nn.Conv2d(3, StageWidths[0], kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, padding_mode='reflect', bias=False), ActivationGain=BiasedActivation.Gain)
@@ -288,7 +260,7 @@ class Discriminator(nn.Module):
         MainLayers = []
         ExtendedStageWidths = StageWidths + [EpilogWidth]
         for x in range(len(StageWidths)):
-            MainLayers += [DiscriminatorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField)]
+            MainLayers += [DiscriminatorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter)]
         self.MainLayers = nn.ModuleList(MainLayers)
         
         self.EpilogLayer = DiscriminatorEpilogLayer(EpilogWidth, LatentDimension)
