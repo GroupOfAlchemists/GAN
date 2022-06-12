@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from Resamplers import InterpolativeUpsampler, InterpolativeDownsampler, InplaceUpsampler, InplaceDownsampler
+from FusedOperators import BiasedActivation
 
 def MSRInitializer(Layer, ActivationGain=1):
     FanIn = Layer.weight.data.size(1) * Layer.weight.data[0][0].numel()
@@ -11,22 +12,6 @@ def MSRInitializer(Layer, ActivationGain=1):
         Layer.bias.data.zero_()
     
     return Layer
-
-class BiasedActivation(nn.Module):
-    Gain = math.sqrt(2)
-    Function = nn.functional.silu
-    
-    def __init__(self, InputUnits, ConvolutionalLayer=True):
-        super(BiasedActivation, self).__init__()
-        
-        self.Bias = nn.Parameter(torch.empty(InputUnits))
-        self.Bias.data.zero_()
-        
-        self.ConvolutionalLayer = ConvolutionalLayer
-        
-    def forward(self, x):
-        y = x + self.Bias.view(1, -1, 1, 1) if self.ConvolutionalLayer else x + self.Bias.view(1, -1)
-        return BiasedActivation.Function(y)
 
 class GeneratorBlock(nn.Module):
       def __init__(self, InputChannels, CompressionFactor, ReceptiveField):
@@ -174,7 +159,7 @@ class DiscriminatorEpilogLayer(nn.Module):
           self.LinearLayer2 = MSRInitializer(nn.Linear(InputChannels, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
           
           self.NonLinearity1 = BiasedActivation(InputChannels)
-          self.NonLinearity2 = BiasedActivation(LatentDimension, ConvolutionalLayer=False)
+          self.NonLinearity2 = BiasedActivation(LatentDimension)
           
       def forward(self, x):
           y = self.LinearLayer1(self.NonLinearity1(x)).view(x.shape[0], -1)
@@ -187,8 +172,8 @@ class FullyConnectedBlock(nn.Module):
         self.LinearLayer1 = MSRInitializer(nn.Linear(LatentDimension, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
         self.LinearLayer2 = MSRInitializer(nn.Linear(LatentDimension, LatentDimension, bias=False), ActivationGain=0)
         
-        self.NonLinearity1 = BiasedActivation(LatentDimension, ConvolutionalLayer=False)
-        self.NonLinearity2 = BiasedActivation(LatentDimension, ConvolutionalLayer=False)
+        self.NonLinearity1 = BiasedActivation(LatentDimension)
+        self.NonLinearity2 = BiasedActivation(LatentDimension)
         
     def forward(self, x):
         y = self.LinearLayer1(self.NonLinearity1(x))
@@ -204,9 +189,9 @@ class MappingBlock(nn.Module):
 
           self.BlockList = nn.ModuleList([FullyConnectedBlock(LatentDimension) for _ in range(Blocks)])
           
-          self.NonLinearity = BiasedActivation(LatentDimension, ConvolutionalLayer=False)
+          self.NonLinearity = BiasedActivation(LatentDimension)
           self.EpilogLayer = MSRInitializer(nn.Linear(LatentDimension, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
-          self.EpilogNonLinearity = BiasedActivation(LatentDimension, ConvolutionalLayer=False)
+          self.EpilogNonLinearity = BiasedActivation(LatentDimension)
           
       def forward(self, z):
           w = self.PrologLayer(z)

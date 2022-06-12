@@ -27,7 +27,7 @@ def run():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
     parser.add_argument('--imageSize', type=int, default=128, help='the height / width of the input image to network')
-    parser.add_argument('--lr', type=float, default=2e-4, help='learning rate')
+    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--nz', type=int, default=64, help='size of the latent z vector')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=8)
     parser.add_argument('--outf', default='.', help='folder to output images and model checkpoints')
