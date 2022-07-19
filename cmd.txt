@@ -1,0 +1,3 @@
+train.py --outdir=training-runs --data=datasets/ffhq-256x256.zip --batch=64 --grad-accum=16 --gamma=10 --mirror=1 --tick=1 --resume=training-runs/00000-ffhq-256x256-batch64-gamma10/network-snapshot-000000.pth
+
+calc_metrics.py --network=training-runs/00000-ffhq-256x256-batch64-gamma10/network-snapshot-000000.pth --metrics=fid50k_full,kid50k_full,pr50k3_full,fid50k,kid50k,pr50k3,is50k
