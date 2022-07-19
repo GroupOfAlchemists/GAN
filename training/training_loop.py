@@ -289,7 +289,7 @@ def training_loop(
             }, snapshot_pkl)
 
         # Evaluate metrics.
-        if len(metrics) > 0:
+        if (snapshot_pkl is not None) and (len(metrics) > 0):
             print('Evaluating metrics...')
             for metric in metrics:
                 result_dict = metric_main.calc_metric(metric=metric, G=G_ema.Model, z_dim=z_dim,
