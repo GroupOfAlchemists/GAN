@@ -185,8 +185,8 @@ def training_loop(
     print('Initializing logs...')
     stats_collector = training_stats.Collector(regex='.*')
     stats_metrics = dict()
-    
     stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'wt')
+    stats_tfevents = None
     try:
         import torch.utils.tensorboard as tensorboard
         stats_tfevents = tensorboard.SummaryWriter(run_dir)
