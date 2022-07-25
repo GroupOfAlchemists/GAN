@@ -144,24 +144,32 @@ class DiscriminatorStage(nn.Module):
             x = Block(x)
         return x
         
-class GeneratorPrologLayer(nn.Module):
-    def __init__(self, LatentDimension, OutputChannels):
-        super(GeneratorPrologLayer, self).__init__()
+class GeneratorPrologStage(nn.Module):
+    def __init__(self, LatentDimension, OutputChannels, Blocks, CompressionFactor, ReceptiveField):
+        super(GeneratorPrologStage, self).__init__()
         
         self.Basis = nn.Parameter(torch.empty((OutputChannels, 4, 4)))
+        self.Basis.data.normal_(0, BiasedActivation.Gain)
+        
         self.LinearLayer = MSRInitializer(nn.Linear(LatentDimension, OutputChannels, bias=False))
         self.NonLinearity = BiasedActivation(OutputChannels)
         
-        self.Basis.data.normal_(0, BiasedActivation.Gain)
+        self.BlockList = nn.ModuleList([GeneratorBlock(OutputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
         
     def forward(self, w):
         x = self.LinearLayer(w).view(w.shape[0], -1, 1, 1)
-        y = self.Basis.view(1, -1, 4, 4) * x
-        return y, self.NonLinearity(y)
+        x = self.Basis.view(1, -1, 4, 4) * x
+        ActivationMaps = self.NonLinearity(x)
+        
+        for Block in self.BlockList:
+            x, ActivationMaps = Block(x, ActivationMaps)
+        return x, ActivationMaps
      
-class DiscriminatorEpilogLayer(nn.Module):
-    def __init__(self, InputChannels, LatentDimension):
-        super(DiscriminatorEpilogLayer, self).__init__()
+class DiscriminatorEpilogStage(nn.Module):
+    def __init__(self, InputChannels, LatentDimension, Blocks, CompressionFactor, ReceptiveField):
+        super(DiscriminatorEpilogStage, self).__init__()
+        
+        self.BlockList = nn.ModuleList([DiscriminatorBlock(InputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
         
         self.LinearLayer1 = MSRInitializer(nn.Conv2d(InputChannels, InputChannels, kernel_size=4, stride=1, padding=0, groups=InputChannels, bias=False))
         self.LinearLayer2 = MSRInitializer(nn.Linear(InputChannels, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
@@ -170,8 +178,11 @@ class DiscriminatorEpilogLayer(nn.Module):
         self.NonLinearity2 = BiasedActivation(LatentDimension)
         
     def forward(self, x):
-        y = self.LinearLayer1(self.NonLinearity1(x)).view(x.shape[0], -1)
-        return self.NonLinearity2(self.LinearLayer2(y))
+        for Block in self.BlockList:
+            x = Block(x)
+        
+        x = self.LinearLayer1(self.NonLinearity1(x)).view(x.shape[0], -1)
+        return self.NonLinearity2(self.LinearLayer2(x))
 
 class FullyConnectedBlock(nn.Module):
     def __init__(self, LatentDimension):
@@ -214,20 +225,19 @@ def ToRGB(InputChannels, ResidualComponent=False):
     return MSRInitializer(nn.Conv2d(InputChannels, 3, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0 if ResidualComponent else 1)
 
 class Generator(nn.Module):
-    def __init__(self, NoiseDimension=512, LatentDimension=512, LatentMappingDepth=8, PrologWidth=1024, StageWidths=[1024, 1024, 1024, 1024, 1024, 512, 256, 128], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, NoiseDimension=512, LatentDimension=512, LatentMappingDepth=8, StageWidths=[1024, 1024, 1024, 1024, 1024, 1024, 512, 256, 128], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Generator, self).__init__()
         
         self.LatentLayer = MappingBlock(NoiseDimension, LatentDimension, LatentMappingDepth // 2 - 1)
         
-        self.PrologLayer = GeneratorPrologLayer(LatentDimension, PrologWidth)
-        self.AggregateProlog = ToRGB(PrologWidth)
+        self.PrologLayer = GeneratorPrologStage(LatentDimension, StageWidths[0], BlocksPerStage[0], CompressionFactor, ReceptiveField)
+        self.AggregateProlog = ToRGB(StageWidths[0])
         
         MainLayers = []
         AggregationLayers = []
-        ExtendedStageWidths = [PrologWidth] + StageWidths
-        for x in range(len(StageWidths)):
-            MainLayers += [GeneratorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter)]
-            AggregationLayers += [ToRGB(ExtendedStageWidths[x + 1], ResidualComponent=True)]    
+        for x in range(len(StageWidths) - 1):
+            MainLayers += [GeneratorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x + 1], CompressionFactor, ReceptiveField, ResamplingFilter)]
+            AggregationLayers += [ToRGB(StageWidths[x + 1], ResidualComponent=True)]    
         self.MainLayers = nn.ModuleList(MainLayers)
         self.AggregationLayers = nn.ModuleList(AggregationLayers)
         self.Resampler = InterpolativeUpsampler(ResamplingFilter)
@@ -243,18 +253,17 @@ class Generator(nn.Module):
         return AggregatedOutput
 
 class Discriminator(nn.Module):
-    def __init__(self, LatentDimension=512, EpilogWidth=1024, StageWidths=[128, 256, 512, 1024, 1024, 1024, 1024, 1024], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, LatentDimension=512, StageWidths=[128, 256, 512, 1024, 1024, 1024, 1024, 1024, 1024], BlocksPerStage=[4, 4, 4, 4, 4, 4, 4, 4, 4], CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Discriminator, self).__init__()
         
         self.FromRGB = MSRInitializer(nn.Conv2d(3, StageWidths[0], kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, padding_mode='reflect', bias=False), ActivationGain=BiasedActivation.Gain)
         
         MainLayers = []
-        ExtendedStageWidths = StageWidths + [EpilogWidth]
-        for x in range(len(StageWidths)):
-            MainLayers += [DiscriminatorStage(ExtendedStageWidths[x], ExtendedStageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter)]
+        for x in range(len(StageWidths) - 1):
+            MainLayers += [DiscriminatorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter)]
         self.MainLayers = nn.ModuleList(MainLayers)
         
-        self.EpilogLayer = DiscriminatorEpilogLayer(EpilogWidth, LatentDimension)
+        self.EpilogLayer = DiscriminatorEpilogStage(StageWidths[-1], LatentDimension, BlocksPerStage[-1], CompressionFactor, ReceptiveField)
         self.CriticLayer = MSRInitializer(nn.Linear(LatentDimension, 1))
         
     def forward(self, x):

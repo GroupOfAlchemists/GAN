@@ -153,13 +153,11 @@ def main(**kwargs):
     
     c.G_kwargs.NoiseDimension = 512
     c.G_kwargs.LatentMappingDepth = opts.map_depth
-    c.G_kwargs.PrologWidth = 1024
-    c.G_kwargs.StageWidths = [1024, 1024, 1024, 512, 256, 128]
-    c.G_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2]
+    c.G_kwargs.StageWidths = [1024, 1024, 1024, 1024, 512, 256, 128]
+    c.G_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
-    c.D_kwargs.EpilogWidth = 1024
-    c.D_kwargs.StageWidths = [128, 256, 512, 1024, 1024, 1024]
-    c.D_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2]
+    c.D_kwargs.StageWidths = [128, 256, 512, 1024, 1024, 1024, 1024]
+    c.D_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
     c.loss_kwargs.gamma = opts.gamma
     c.G_opt_kwargs.lr = opts.glr
