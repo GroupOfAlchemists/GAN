@@ -108,7 +108,7 @@ def parse_comma_separated_list(s):
 @click.option('--outdir',       help='Where to save the results', metavar='DIR',                required=True)
 @click.option('--data',         help='Training data', metavar='[ZIP|DIR]',                      type=str, required=True)
 @click.option('--batch',        help='Total batch size', metavar='INT',                         type=click.IntRange(min=1), required=True)
-@click.option('--gamma',        help='Gradient penalty weight', metavar='FLOAT',               type=click.FloatRange(min=0), required=True)
+@click.option('--gamma',        help='Gradient penalty weight', metavar='FLOAT',                type=click.FloatRange(min=0), required=True)
 
 # Optional features.
 @click.option('--mirror',       help='Enable dataset x-flips', metavar='BOOL',                  type=bool, default=False, show_default=True)
@@ -116,9 +116,11 @@ def parse_comma_separated_list(s):
 
 # Misc hyperparameters.
 @click.option('--grad-accum',   help='Gradient accumulation step per batch', metavar='INT',     type=click.IntRange(min=1), default=1, show_default=True)
-@click.option('--glr',          help='G learning rate  [default: varies]', metavar='FLOAT',     type=click.FloatRange(min=0), default=2e-4, show_default=True)
+@click.option('--glr',          help='G learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
 @click.option('--dlr',          help='D learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
-@click.option('--map-depth',    help='Mapping network depth  [default: varies]', metavar='INT', type=click.IntRange(min=2), default=8, show_default=True)
+@click.option('--map-depth',    help='Mapping network depth', metavar='INT',                    type=click.IntRange(min=2), default=8, show_default=True)
+@click.option('--z-dim',        help='Dimensionality of the noise vector', metavar='INT',       type=click.IntRange(min=1), default=512, show_default=True)
+@click.option('--w-dim',        help='Dimensionality of the w space', metavar='INT',            type=click.IntRange(min=1), default=512, show_default=True)
 
 # Misc settings.
 @click.option('--desc',         help='String to include in result dir name', metavar='STR',     type=str)
@@ -151,11 +153,13 @@ def main(**kwargs):
     c.batch_size = opts.batch
     c.grad_accum = opts.grad_accum
     
-    c.G_kwargs.NoiseDimension = 512
+    c.G_kwargs.NoiseDimension = opts.z_dim
+    c.G_kwargs.LatentDimension = opts.w_dim
     c.G_kwargs.LatentMappingDepth = opts.map_depth
     c.G_kwargs.StageWidths = [1024, 1024, 1024, 1024, 512, 256, 128]
     c.G_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
+    c.D_kwargs.LatentDimension = opts.w_dim
     c.D_kwargs.StageWidths = [128, 256, 512, 1024, 1024, 1024, 1024]
     c.D_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
