@@ -151,19 +151,15 @@ class GeneratorPrologStage(nn.Module):
         self.Basis = nn.Parameter(torch.empty((OutputChannels, 4, 4)))
         self.Basis.data.normal_(0, BiasedActivation.Gain)
         
-        self.LinearLayer1 = MSRInitializer(nn.Linear(LatentDimension, OutputChannels, bias=False))
-        self.LinearLayer2 = MSRInitializer(nn.Conv2d(OutputChannels, OutputChannels, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=BiasedActivation.Gain)
-        
-        self.NonLinearity1 = BiasedActivation(OutputChannels)
-        self.NonLinearity2 = BiasedActivation(OutputChannels)
+        self.LinearLayer = MSRInitializer(nn.Linear(LatentDimension, OutputChannels, bias=False))
+        self.NonLinearity = BiasedActivation(OutputChannels)
         
         self.BlockList = nn.ModuleList([GeneratorBlock(OutputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
         
     def forward(self, w):
-        x = self.LinearLayer1(w).view(w.shape[0], -1, 1, 1)
+        x = self.LinearLayer(w).view(w.shape[0], -1, 1, 1)
         x = self.Basis.view(1, -1, 4, 4) * x
-        x = self.LinearLayer2(self.NonLinearity1(x))
-        ActivationMaps = self.NonLinearity2(x)
+        ActivationMaps = self.NonLinearity(x)
         
         for Block in self.BlockList:
             x, ActivationMaps = Block(x, ActivationMaps)
@@ -175,11 +171,8 @@ class DiscriminatorEpilogStage(nn.Module):
         
         self.Basis = MSRInitializer(nn.Conv2d(InputChannels, InputChannels, kernel_size=4, stride=1, padding=0, groups=InputChannels, bias=False))
         
-        self.LinearLayer1 = MSRInitializer(nn.Conv2d(InputChannels, InputChannels, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=BiasedActivation.Gain)
-        self.LinearLayer2 = MSRInitializer(nn.Linear(InputChannels, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
-        
-        self.NonLinearity1 = BiasedActivation(InputChannels)
-        self.NonLinearity2 = BiasedActivation(InputChannels)
+        self.LinearLayer = MSRInitializer(nn.Linear(InputChannels, LatentDimension, bias=False), ActivationGain=BiasedActivation.Gain)
+        self.NonLinearity = BiasedActivation(InputChannels)
         
         self.BlockList = nn.ModuleList([DiscriminatorBlock(InputChannels, CompressionFactor, ReceptiveField) for _ in range(Blocks - 1)])
         
@@ -187,9 +180,8 @@ class DiscriminatorEpilogStage(nn.Module):
         for Block in self.BlockList:
             x = Block(x)
         
-        x = self.LinearLayer1(self.NonLinearity1(x))
-        x = self.Basis(self.NonLinearity2(x)).view(x.shape[0], -1)
-        return self.LinearLayer2(x)
+        x = self.Basis(self.NonLinearity(x)).view(x.shape[0], -1)
+        return self.LinearLayer(x)
 
 class FullyConnectedBlock(nn.Module):
     def __init__(self, LatentDimension):
