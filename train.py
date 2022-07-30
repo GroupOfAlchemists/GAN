@@ -118,9 +118,8 @@ def parse_comma_separated_list(s):
 @click.option('--grad-accum',   help='Gradient accumulation step per batch', metavar='INT',     type=click.IntRange(min=1), default=1, show_default=True)
 @click.option('--glr',          help='G learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
 @click.option('--dlr',          help='D learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
-@click.option('--map-depth',    help='Mapping network depth', metavar='INT',                    type=click.IntRange(min=2), default=8, show_default=True)
 @click.option('--z-dim',        help='Dimensionality of the noise vector', metavar='INT',       type=click.IntRange(min=1), default=512, show_default=True)
-@click.option('--w-dim',        help='Dimensionality of the w space', metavar='INT',            type=click.IntRange(min=1), default=512, show_default=True)
+@click.option('--w-dim',        help='Dimensionality of the w space', metavar='INT',            type=click.IntRange(min=1), default=1024, show_default=True)
 
 # Misc settings.
 @click.option('--desc',         help='String to include in result dir name', metavar='STR',     type=str)
@@ -155,11 +154,12 @@ def main(**kwargs):
     
     c.G_kwargs.NoiseDimension = opts.z_dim
     c.G_kwargs.LatentDimension = opts.w_dim
-    c.G_kwargs.LatentMappingDepth = opts.map_depth
+    c.G_kwargs.LatentMappingBlocks = 2
     c.G_kwargs.StageWidths = [1024, 1024, 1024, 1024, 512, 256, 128]
     c.G_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
     c.D_kwargs.LatentDimension = opts.w_dim
+    c.D_kwargs.LatentMappingBlocks = 2
     c.D_kwargs.StageWidths = [128, 256, 512, 1024, 1024, 1024, 1024]
     c.D_kwargs.BlocksPerStage = [2, 2, 2, 2, 2, 2, 2]
 
@@ -176,8 +176,6 @@ def main(**kwargs):
     # Sanity checks.
     if c.batch_size % c.grad_accum != 0:
         raise click.ClickException('--batch must be a multiple of --grad-accum')
-    if opts.map_depth % 2 != 0:
-        raise click.ClickException('--map-depth must be an even number')
     if any(not metric_main.is_valid_metric(metric) for metric in c.metrics):
         raise click.ClickException('\n'.join(['--metrics can only contain the following values:'] + metric_main.list_valid_metrics()))
 

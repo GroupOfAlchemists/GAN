@@ -10,7 +10,7 @@ class AdversarialTraining:
     def __init__(self, Generator, Discriminator):
         self.Generator = Generator
         self.Discriminator = Discriminator
-        self.NoiseDimension = Generator.LatentLayer.PrologLayer.weight.shape[1]
+        self.NoiseDimension = Generator.LatentLayer.LinearLayer.weight.shape[1]
     
     def AccumulateDiscriminatorGradients(self, RealSamples, Gamma, Scale=1):
         RealSamples.requires_grad = True
