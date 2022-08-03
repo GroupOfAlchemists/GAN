@@ -116,8 +116,8 @@ def parse_comma_separated_list(s):
 
 # Misc hyperparameters.
 @click.option('--grad-accum',   help='Gradient accumulation step per batch', metavar='INT',     type=click.IntRange(min=1), default=1, show_default=True)
-@click.option('--glr',          help='G learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
-@click.option('--dlr',          help='D learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=2e-4, show_default=True)
+@click.option('--glr',          help='G learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=1e-4, show_default=True)
+@click.option('--dlr',          help='D learning rate', metavar='FLOAT',                        type=click.FloatRange(min=0), default=1e-4, show_default=True)
 @click.option('--z-dim',        help='Dimensionality of the noise vector', metavar='INT',       type=click.IntRange(min=1), default=512, show_default=True)
 @click.option('--w-dim',        help='Dimensionality of the w space', metavar='INT',            type=click.IntRange(min=1), default=1024, show_default=True)
 
