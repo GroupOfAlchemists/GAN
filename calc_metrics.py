@@ -16,6 +16,7 @@ import copy
 import torch
 
 import dnnlib
+import legacy
 from metrics import metric_main
 from metrics import metric_utils
 from torch_utils import training_stats
@@ -53,15 +54,16 @@ def subprocess_fn(rank, args, temp_dir):
     # Print network summary.
     G = copy.deepcopy(args.G).eval().requires_grad_(False).to(device)
     if rank == 0 and args.verbose:
-        z = torch.empty([1, args.z_dim], device=device)
-        misc.print_module_summary(G, [z])
+        z = torch.empty([1, G.z_dim], device=device)
+        c = torch.empty([1, G.c_dim], device=device)
+        misc.print_module_summary(G, [z, c])
 
     # Calculate each metric.
     for metric in args.metrics:
         if rank == 0 and args.verbose:
             print(f'Calculating {metric}...')
         progress = metric_utils.ProgressMonitor(verbose=args.verbose)
-        result_dict = metric_main.calc_metric(metric=metric, G=G, z_dim=args.z_dim, dataset_kwargs=args.dataset_kwargs,
+        result_dict = metric_main.calc_metric(metric=metric, G=G, dataset_kwargs=args.dataset_kwargs,
             num_gpus=args.num_gpus, rank=rank, device=device, progress=progress)
         if rank == 0:
             metric_main.report_metric(result_dict, run_dir=args.run_dir, snapshot_pkl=args.network_pkl)
@@ -112,6 +114,10 @@ def calc_metrics(ctx, network_pkl, metrics, data, mirror, gpus, verbose):
       fid50k_full  Frechet inception distance against the full dataset.
       kid50k_full  Kernel inception distance against the full dataset.
       pr50k3_full  Precision and recall againt the full dataset.
+      ppl2_wend    Perceptual path length in W, endpoints, full image.
+      eqt50k_int   Equivariance w.r.t. integer translation (EQ-T).
+      eqt50k_frac  Equivariance w.r.t. fractional translation (EQ-T_frac).
+      eqr50k       Equivariance w.r.t. rotation (EQ-R).
 
     \b
     Legacy metrics:
@@ -134,13 +140,10 @@ def calc_metrics(ctx, network_pkl, metrics, data, mirror, gpus, verbose):
         ctx.fail('--network must point to a file or URL')
     if args.verbose:
         print(f'Loading network from "{network_pkl}"...')
-        
-    network_dict = torch.load(network_pkl, map_location='cpu')
-    cfg = dnnlib.EasyDict(network_dict['G_kwargs'])
-    args.G = dnnlib.util.construct_class_by_name(**cfg)
-    args.G.load_state_dict(network_dict['G_ema_state_dict'], strict=True)
-    args.z_dim = network_dict['G_kwargs']['NoiseDimension']
-    
+    with dnnlib.util.open_url(network_pkl, verbose=args.verbose) as f:
+        network_dict = legacy.load_network_pkl(f)
+        args.G = network_dict['G_ema'] # subclass of torch.nn.Module
+
     # Initialize dataset options.
     if data is not None:
         args.dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=data)
@@ -150,7 +153,8 @@ def calc_metrics(ctx, network_pkl, metrics, data, mirror, gpus, verbose):
         ctx.fail('Could not look up dataset options; please specify --data')
 
     # Finalize dataset options.
-    args.dataset_kwargs.use_labels = False
+    args.dataset_kwargs.resolution = args.G.img_resolution
+    args.dataset_kwargs.use_labels = (args.G.c_dim != 0)
     if mirror is not None:
         args.dataset_kwargs.xflip = mirror
 

@@ -21,7 +21,7 @@ import dnnlib
 #----------------------------------------------------------------------------
 
 class MetricOptions:
-    def __init__(self, G=None, G_kwargs={}, dataset_kwargs={}, num_gpus=1, rank=0, device=None, progress=None, cache=True, **kwargs):
+    def __init__(self, G=None, G_kwargs={}, dataset_kwargs={}, num_gpus=1, rank=0, device=None, progress=None, cache=True):
         assert 0 <= rank < num_gpus
         self.G              = G
         self.G_kwargs       = dnnlib.EasyDict(G_kwargs)
@@ -31,8 +31,6 @@ class MetricOptions:
         self.device         = device if device is not None else torch.device('cuda', rank)
         self.progress       = progress.sub() if progress is not None and rank == 0 else ProgressMonitor()
         self.cache          = cache
-        for key in kwargs:
-            self.__setattr__(key, kwargs[key])
 
 #----------------------------------------------------------------------------
 
@@ -252,7 +250,7 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
         batch_gen = min(batch_size, 4)
     assert batch_size % batch_gen == 0
 
-    # Setup generator.
+    # Setup generator and labels.
     G = copy.deepcopy(opts.G).eval().requires_grad_(False).to(opts.device)
 
     # Initialize.
@@ -265,7 +263,7 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
     while not stats.is_full():
         images = []
         for _i in range(batch_size // batch_gen):
-            z = torch.randn([batch_gen, opts.z_dim], device=opts.device)
+            z = torch.randn([batch_gen, G.z_dim], device=opts.device)
             img = G(z)
             img = (img * 127.5 + 128).clamp(0, 255).to(torch.uint8)
             images.append(img)
