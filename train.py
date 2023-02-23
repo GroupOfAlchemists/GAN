@@ -210,12 +210,13 @@ def main(**kwargs):
     c.G_kwargs.NoiseDimension = 64
     c.G_kwargs.StageWidths = stage_widths
     c.G_kwargs.BlocksPerStage = blocks_per_stage
+    c.G_kwargs.CompressionFactor = 3
+    c.G_kwargs.Cardinality = 4
     
     c.D_kwargs.StageWidths = [*reversed(stage_widths)]
     c.D_kwargs.BlocksPerStage = [*reversed(blocks_per_stage)]
-    
-    
-    
+    c.D_kwargs.CompressionFactor = 3
+    c.D_kwargs.Cardinality = 4
     
     
     

@@ -3,3 +3,5 @@ Config-A: StyleGAN2
 Config-B: New Simplified ResNet Arch for G & D, New Loss (Relativistic + R1 + R2)
 Removed Features: Spherical Latent, Path Length Reg, Minibatch Stddev, Equalized LR, Mapping Network, Style Injection (Weight Mod/Demod), Noise Injection, Mixing Reg
 Changes: z_dim (512 -> 64), gamma (1 -> 5), lr (0.0025 -> 0.0001), lazy_reg_interval (16 -> 8)
+
+Config-C: ResNeXt 4x16d

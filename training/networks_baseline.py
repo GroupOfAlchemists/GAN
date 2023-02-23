@@ -1,84 +1,27 @@
-import numpy as np
+import math
 import torch
 import torch.nn as nn
-from torch_utils.ops import upfirdn2d
-from torch_utils.ops import conv2d_resample
-from torch_utils.ops import bias_act
-import math
+from .Resamplers import InterpolativeUpsampler, InterpolativeDownsampler
+from .FusedOperators import BiasedActivation
 
 def MSRInitializer(Layer, ActivationGain=1):
     FanIn = Layer.weight.data.size(1) * Layer.weight.data[0][0].numel()
     Layer.weight.data.normal_(0,  ActivationGain / math.sqrt(FanIn))
+
+    if Layer.bias is not None:
+        Layer.bias.data.zero_()
+    
     return Layer
 
-
-class Conv2dLayer(torch.nn.Module):
-    def __init__(self,
-        in_channels,                    # Number of input channels.
-        out_channels,                   # Number of output channels.
-        kernel_size,                    # Width and height of the convolution kernel.
-        init_gain       = 1,
-        padding         = None,
-        groups          = 1,
-        up              = 1,            # Integer upsampling factor.
-        down            = 1,            # Integer downsampling factor.
-        resample_filter = [1,3,3,1]     # Low-pass filter to apply when resampling activations.
-    ):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.up = up
-        self.down = down
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
-        self.padding = kernel_size // 2 if padding is None else padding
-        self.groups = groups
-
-        memory_format = torch.contiguous_format
-        self.weight = torch.nn.Parameter(torch.empty([out_channels, in_channels // groups, kernel_size, kernel_size]).to(memory_format=memory_format))
-        MSRInitializer(self, init_gain)
-
-    def forward(self, x):
-        flip_weight = (self.up == 1) # slightly faster
-        x = conv2d_resample.conv2d_resample(x=x, w=self.weight.to(x.dtype), f=self.resample_filter, up=self.up, down=self.down, padding=self.padding, groups=self.groups, flip_weight=flip_weight)
-        
-        return x
-    
-class FullyConnectedLayer(torch.nn.Module):
-    def __init__(self,
-        in_features,                # Number of input features.
-        out_features               # Number of output features.
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.weight = torch.nn.Parameter(torch.randn([out_features, in_features]))
-        MSRInitializer(self)
-
-    def forward(self, x):
-        x = x.matmul(self.weight.to(x.dtype).t())
-        return x
-
-class BiasedActivation(nn.Module):
-    act_gain = bias_act.activation_funcs['lrelu'].def_gain
-    
-    def __init__(self, InputUnits):
-        super(BiasedActivation, self).__init__()
-        
-        self.Bias = nn.Parameter(torch.empty(InputUnits))
-        self.Bias.data.zero_()
-        
-    def forward(self, x):
-        return bias_act.bias_act(x, self.Bias, act='lrelu', gain=1)
-    
 class ResidualBlock(nn.Module):
-    def __init__(self, InputChannels, CompressionFactor, ReceptiveField):
+    def __init__(self, InputChannels, CompressionFactor, Cardinality, ReceptiveField):
         super(ResidualBlock, self).__init__()
         
         CompressedChannels = InputChannels // CompressionFactor
         
-        self.LinearLayer1 = Conv2dLayer(InputChannels, CompressedChannels, kernel_size=1, init_gain=BiasedActivation.act_gain)
-        self.LinearLayer2 = Conv2dLayer(CompressedChannels, CompressedChannels, kernel_size=ReceptiveField, init_gain=BiasedActivation.act_gain)
-        self.LinearLayer3 = Conv2dLayer(CompressedChannels, InputChannels, kernel_size=1, init_gain=0)
+        self.LinearLayer1 = MSRInitializer(nn.Conv2d(InputChannels, CompressedChannels, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=BiasedActivation.Gain)
+        self.LinearLayer2 = MSRInitializer(nn.Conv2d(CompressedChannels, CompressedChannels, kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, groups=Cardinality, bias=False), ActivationGain=BiasedActivation.Gain)
+        self.LinearLayer3 = MSRInitializer(nn.Conv2d(CompressedChannels, InputChannels, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0)
         
         self.NonLinearity1 = BiasedActivation(CompressedChannels)
         self.NonLinearity2 = BiasedActivation(CompressedChannels)
@@ -94,38 +37,38 @@ class UpsampleLayer(nn.Module):
     def __init__(self, InputChannels, OutputChannels, ResamplingFilter):
         super(UpsampleLayer, self).__init__()
         
+        self.Resampler = InterpolativeUpsampler(ResamplingFilter)
+        
         if InputChannels != OutputChannels:
-            self.LinearLayer = Conv2dLayer(InputChannels, OutputChannels, kernel_size=1, up=2, resample_filter=ResamplingFilter)
-        else:
-            self.register_buffer('resample_filter', upfirdn2d.setup_filter(ResamplingFilter))
+            self.LinearLayer = MSRInitializer(nn.Conv2d(InputChannels, OutputChannels, kernel_size=1, stride=1, padding=0, bias=False))
         
     def forward(self, x):
-        if hasattr(self, 'LinearLayer'):
-            return self.LinearLayer(x)
-        else:
-            return upfirdn2d.upsample2d(x, self.resample_filter)
+        x = self.LinearLayer(x) if hasattr(self, 'LinearLayer') else x
+        x = self.Resampler(x)
         
+        return x
+    
 class DownsampleLayer(nn.Module):
     def __init__(self, InputChannels, OutputChannels, ResamplingFilter):
         super(DownsampleLayer, self).__init__()
         
+        self.Resampler = InterpolativeDownsampler(ResamplingFilter)
+        
         if InputChannels != OutputChannels:
-            self.LinearLayer = Conv2dLayer(InputChannels, OutputChannels, kernel_size=1, down=2, resample_filter=ResamplingFilter)
-        else:
-            self.register_buffer('resample_filter', upfirdn2d.setup_filter(ResamplingFilter))
+            self.LinearLayer = MSRInitializer(nn.Conv2d(InputChannels, OutputChannels, kernel_size=1, stride=1, padding=0, bias=False))
         
     def forward(self, x):
-        if hasattr(self, 'LinearLayer'):
-            return self.LinearLayer(x)
-        else:
-            return upfirdn2d.downsample2d(x, self.resample_filter)
+        x = self.Resampler(x)
+        x = self.LinearLayer(x) if hasattr(self, 'LinearLayer') else x
         
+        return x
+    
 class GenerativeBasis(nn.Module):
     def __init__(self, InputDimension, OutputChannels):
         super(GenerativeBasis, self).__init__()
         
-        self.Basis = torch.nn.Parameter(torch.randn([OutputChannels, 4, 4]))
-        self.LinearLayer = FullyConnectedLayer(InputDimension, OutputChannels)
+        self.Basis = nn.Parameter(torch.empty(OutputChannels, 4, 4).normal_(0, 1))
+        self.LinearLayer = MSRInitializer(nn.Linear(InputDimension, OutputChannels, bias=False))
         
     def forward(self, x):
         return self.Basis.view(1, -1, 4, 4) * self.LinearLayer(x).view(x.shape[0], -1, 1, 1)
@@ -134,18 +77,18 @@ class DiscriminativeBasis(nn.Module):
     def __init__(self, InputChannels, OutputDimension):
         super(DiscriminativeBasis, self).__init__()
         
-        self.Basis = Conv2dLayer(InputChannels, InputChannels, kernel_size=4, padding=0, groups=InputChannels)
-        self.LinearLayer = FullyConnectedLayer(InputChannels, OutputDimension)
+        self.Basis = MSRInitializer(nn.Conv2d(InputChannels, InputChannels, kernel_size=4, stride=1, padding=0, groups=InputChannels, bias=False))
+        self.LinearLayer = MSRInitializer(nn.Linear(InputChannels, OutputDimension, bias=False))
         
     def forward(self, x):
         return self.LinearLayer(self.Basis(x).view(x.shape[0], -1))
     
 class GeneratorStage(nn.Module):
-    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, ReceptiveField, ResamplingFilter=None):
+    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter=None):
         super(GeneratorStage, self).__init__()
         
         TransitionLayer = GenerativeBasis(InputChannels, OutputChannels) if ResamplingFilter is None else UpsampleLayer(InputChannels, OutputChannels, ResamplingFilter)
-        self.Layers = nn.ModuleList([TransitionLayer] + [ResidualBlock(OutputChannels, CompressionFactor, ReceptiveField) for _ in range(NumberOfBlocks)])
+        self.Layers = nn.ModuleList([TransitionLayer] + [ResidualBlock(OutputChannels, CompressionFactor, Cardinality, ReceptiveField) for _ in range(NumberOfBlocks)])
         
     def forward(self, x):
         for Layer in self.Layers:
@@ -154,11 +97,11 @@ class GeneratorStage(nn.Module):
         return x
     
 class DiscriminatorStage(nn.Module):
-    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, ReceptiveField, ResamplingFilter=None):
+    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter=None):
         super(DiscriminatorStage, self).__init__()
         
         TransitionLayer = DiscriminativeBasis(InputChannels, OutputChannels) if ResamplingFilter is None else DownsampleLayer(InputChannels, OutputChannels, ResamplingFilter)
-        self.Layers = nn.ModuleList([ResidualBlock(InputChannels, CompressionFactor, ReceptiveField) for _ in range(NumberOfBlocks)] + [TransitionLayer])
+        self.Layers = nn.ModuleList([ResidualBlock(InputChannels, CompressionFactor, Cardinality, ReceptiveField) for _ in range(NumberOfBlocks)] + [TransitionLayer])
         
     def forward(self, x):
         for Layer in self.Layers:
@@ -167,18 +110,18 @@ class DiscriminatorStage(nn.Module):
         return x
     
 class Generator(nn.Module):
-    def __init__(self, NoiseDimension, StageWidths, BlocksPerStage, CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1,3,3,1]):
+    def __init__(self, NoiseDimension, StageWidths, BlocksPerStage, CompressionFactor, Cardinality, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Generator, self).__init__()
         
-        MainLayers = [GeneratorStage(NoiseDimension, StageWidths[0], BlocksPerStage[0], CompressionFactor, ReceptiveField)]
-        MainLayers += [GeneratorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x + 1], CompressionFactor, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
+        MainLayers = [GeneratorStage(NoiseDimension, StageWidths[0], BlocksPerStage[0], CompressionFactor, Cardinality, ReceptiveField)]
+        MainLayers += [GeneratorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x + 1], CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
         
-        AggregationLayers = [Conv2dLayer(StageWidths[0], 3, kernel_size=1)]
-        AggregationLayers += [Conv2dLayer(StageWidths[x + 1], 3, kernel_size=1, init_gain=0) for x in range(len(StageWidths) - 1)]
+        AggregationLayers = [MSRInitializer(nn.Conv2d(StageWidths[0], 3, kernel_size=1, stride=1, padding=0, bias=False))]
+        AggregationLayers += [MSRInitializer(nn.Conv2d(StageWidths[x + 1], 3, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0) for x in range(len(StageWidths) - 1)]
         
         self.MainLayers = nn.ModuleList(MainLayers)
         self.AggregationLayers = nn.ModuleList(AggregationLayers)
-        self.register_buffer('resample_filter', upfirdn2d.setup_filter(ResamplingFilter))
+        self.Resampler = InterpolativeUpsampler(ResamplingFilter)
         
         self.z_dim = NoiseDimension
         
@@ -187,18 +130,18 @@ class Generator(nn.Module):
         
         for Layer, Aggregate in zip(self.MainLayers, self.AggregationLayers):
             x = Layer(x)
-            AggregatedOutput = upfirdn2d.upsample2d(AggregatedOutput, self.resample_filter) + Aggregate(x) if AggregatedOutput is not None else Aggregate(x)
+            AggregatedOutput = self.Resampler(AggregatedOutput) + Aggregate(x) if AggregatedOutput is not None else Aggregate(x)
         
         return AggregatedOutput
     
 class Discriminator(nn.Module):
-    def __init__(self, StageWidths, BlocksPerStage, CompressionFactor=4, ReceptiveField=3, ResamplingFilter=[1,3,3,1]):
+    def __init__(self, StageWidths, BlocksPerStage, CompressionFactor, Cardinality, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Discriminator, self).__init__()
         
-        MainLayers = [DiscriminatorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
-        MainLayers += [DiscriminatorStage(StageWidths[-1], 1, BlocksPerStage[-1], CompressionFactor, ReceptiveField)]
+        MainLayers = [DiscriminatorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x], CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
+        MainLayers += [DiscriminatorStage(StageWidths[-1], 1, BlocksPerStage[-1], CompressionFactor, Cardinality, ReceptiveField)]
         
-        self.ExtractionLayer = Conv2dLayer(3, StageWidths[0], kernel_size=ReceptiveField)
+        self.ExtractionLayer = MSRInitializer(nn.Conv2d(3, StageWidths[0], kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, bias=False))
         self.MainLayers = nn.ModuleList(MainLayers)
         
     def forward(self, x):
