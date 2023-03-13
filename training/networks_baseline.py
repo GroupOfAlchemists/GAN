@@ -14,7 +14,7 @@ def MSRInitializer(Layer, ActivationGain=1):
     return Layer
 
 class ResidualBlock(nn.Module):
-    def __init__(self, InputChannels, CompressionFactor, Cardinality, ReceptiveField):
+    def __init__(self, InputChannels, Cardinality, CompressionFactor, ReceptiveField):
         super(ResidualBlock, self).__init__()
         
         CompressedChannels = InputChannels // CompressionFactor
@@ -84,11 +84,11 @@ class DiscriminativeBasis(nn.Module):
         return self.LinearLayer(self.Basis(x).view(x.shape[0], -1))
     
 class GeneratorStage(nn.Module):
-    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter=None):
+    def __init__(self, InputChannels, OutputChannels, Cardinality, NumberOfBlocks, CompressionFactor, ReceptiveField, ResamplingFilter=None):
         super(GeneratorStage, self).__init__()
         
         TransitionLayer = GenerativeBasis(InputChannels, OutputChannels) if ResamplingFilter is None else UpsampleLayer(InputChannels, OutputChannels, ResamplingFilter)
-        self.Layers = nn.ModuleList([TransitionLayer] + [ResidualBlock(OutputChannels, CompressionFactor, Cardinality, ReceptiveField) for _ in range(NumberOfBlocks)])
+        self.Layers = nn.ModuleList([TransitionLayer] + [ResidualBlock(OutputChannels, Cardinality, CompressionFactor, ReceptiveField) for _ in range(NumberOfBlocks)])
         
     def forward(self, x):
         for Layer in self.Layers:
@@ -97,11 +97,11 @@ class GeneratorStage(nn.Module):
         return x
     
 class DiscriminatorStage(nn.Module):
-    def __init__(self, InputChannels, OutputChannels, NumberOfBlocks, CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter=None):
+    def __init__(self, InputChannels, OutputChannels, Cardinality, NumberOfBlocks, CompressionFactor, ReceptiveField, ResamplingFilter=None):
         super(DiscriminatorStage, self).__init__()
         
         TransitionLayer = DiscriminativeBasis(InputChannels, OutputChannels) if ResamplingFilter is None else DownsampleLayer(InputChannels, OutputChannels, ResamplingFilter)
-        self.Layers = nn.ModuleList([ResidualBlock(InputChannels, CompressionFactor, Cardinality, ReceptiveField) for _ in range(NumberOfBlocks)] + [TransitionLayer])
+        self.Layers = nn.ModuleList([ResidualBlock(InputChannels, Cardinality, CompressionFactor, ReceptiveField) for _ in range(NumberOfBlocks)] + [TransitionLayer])
         
     def forward(self, x):
         for Layer in self.Layers:
@@ -110,14 +110,14 @@ class DiscriminatorStage(nn.Module):
         return x
     
 class Generator(nn.Module):
-    def __init__(self, NoiseDimension, StageWidths, BlocksPerStage, CompressionFactor, Cardinality, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, NoiseDimension, WidthPerStage, CardinalityPerStage, BlocksPerStage, CompressionFactor, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Generator, self).__init__()
         
-        MainLayers = [GeneratorStage(NoiseDimension, StageWidths[0], BlocksPerStage[0], CompressionFactor, Cardinality, ReceptiveField)]
-        MainLayers += [GeneratorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x + 1], CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
+        MainLayers = [GeneratorStage(NoiseDimension, WidthPerStage[0], CardinalityPerStage[0], BlocksPerStage[0], CompressionFactor, ReceptiveField)]
+        MainLayers += [GeneratorStage(WidthPerStage[x], WidthPerStage[x + 1], CardinalityPerStage[x + 1], BlocksPerStage[x + 1], CompressionFactor, ReceptiveField, ResamplingFilter) for x in range(len(WidthPerStage) - 1)]
         
-        AggregationLayers = [MSRInitializer(nn.Conv2d(StageWidths[0], 3, kernel_size=1, stride=1, padding=0, bias=False))]
-        AggregationLayers += [MSRInitializer(nn.Conv2d(StageWidths[x + 1], 3, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0) for x in range(len(StageWidths) - 1)]
+        AggregationLayers = [MSRInitializer(nn.Conv2d(WidthPerStage[0], 3, kernel_size=1, stride=1, padding=0, bias=False))]
+        AggregationLayers += [MSRInitializer(nn.Conv2d(WidthPerStage[x + 1], 3, kernel_size=1, stride=1, padding=0, bias=False), ActivationGain=0) for x in range(len(WidthPerStage) - 1)]
         
         self.MainLayers = nn.ModuleList(MainLayers)
         self.AggregationLayers = nn.ModuleList(AggregationLayers)
@@ -135,13 +135,13 @@ class Generator(nn.Module):
         return AggregatedOutput
     
 class Discriminator(nn.Module):
-    def __init__(self, StageWidths, BlocksPerStage, CompressionFactor, Cardinality, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, WidthPerStage, CardinalityPerStage, BlocksPerStage, CompressionFactor, ReceptiveField=3, ResamplingFilter=[1, 2, 1]):
         super(Discriminator, self).__init__()
         
-        MainLayers = [DiscriminatorStage(StageWidths[x], StageWidths[x + 1], BlocksPerStage[x], CompressionFactor, Cardinality, ReceptiveField, ResamplingFilter) for x in range(len(StageWidths) - 1)]
-        MainLayers += [DiscriminatorStage(StageWidths[-1], 1, BlocksPerStage[-1], CompressionFactor, Cardinality, ReceptiveField)]
+        MainLayers = [DiscriminatorStage(WidthPerStage[x], WidthPerStage[x + 1], CardinalityPerStage[x], BlocksPerStage[x], CompressionFactor, ReceptiveField, ResamplingFilter) for x in range(len(WidthPerStage) - 1)]
+        MainLayers += [DiscriminatorStage(WidthPerStage[-1], 1, CardinalityPerStage[-1], BlocksPerStage[-1], CompressionFactor, ReceptiveField)]
         
-        self.ExtractionLayer = MSRInitializer(nn.Conv2d(3, StageWidths[0], kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, bias=False))
+        self.ExtractionLayer = MSRInitializer(nn.Conv2d(3, WidthPerStage[0], kernel_size=ReceptiveField, stride=1, padding=(ReceptiveField - 1) // 2, bias=False))
         self.MainLayers = nn.ModuleList(MainLayers)
         
     def forward(self, x):
