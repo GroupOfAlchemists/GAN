@@ -9,3 +9,5 @@ Config-C: ResNeXt 4x16d
 Config-D: Fixed Group Size (16), Varying Cardinality, Wider Bottleneck
 
 Config-E: No Output Skip, Simplified Extraction Layer (3x3 -> 1x1)
+
+Config-F: Inverted Bottleneck

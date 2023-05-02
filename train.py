@@ -204,20 +204,20 @@ def main(**kwargs):
     c.batch_gpu = opts.batch_gpu or opts.batch // opts.gpus
     
     
-    width_per_stage = [3 * x // 2 for x in [1024, 1024, 1024, 1024, 512, 256, 128]]
+    width_per_stage = [3 * x // 4 for x in [1024, 1024, 1024, 1024, 512, 256, 128]]
     blocks_per_stage = [2 * x for x in [1, 1, 1, 1, 1, 1, 1]]
-    cardinality_per_stage = [3 * x // 2 for x in [32, 32, 32, 32, 16, 8, 4]]
+    cardinality_per_stage = [3 * x for x in [32, 32, 32, 32, 16, 8, 4]]
     
     c.G_kwargs.NoiseDimension = 64
     c.G_kwargs.WidthPerStage = width_per_stage
     c.G_kwargs.CardinalityPerStage = cardinality_per_stage
     c.G_kwargs.BlocksPerStage = blocks_per_stage
-    c.G_kwargs.CompressionFactor = 2
+    c.G_kwargs.ExpansionFactor = 2
     
     c.D_kwargs.WidthPerStage = [*reversed(width_per_stage)]
     c.D_kwargs.CardinalityPerStage = [*reversed(cardinality_per_stage)]
     c.D_kwargs.BlocksPerStage = [*reversed(blocks_per_stage)]
-    c.D_kwargs.CompressionFactor = 2
+    c.D_kwargs.ExpansionFactor = 2
     
     
     
