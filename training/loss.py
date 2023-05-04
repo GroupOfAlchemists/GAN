@@ -16,9 +16,9 @@ from BaselineGAN.Trainer import AdversarialTraining
 class BaselineGANLoss:
     def __init__(self, device, G, D, augment_pipe=None, r1_gamma=10, style_mixing_prob=0, pl_weight=0, pl_batch_shrink=2, pl_decay=0.01, pl_no_weight_grad=False, blur_init_sigma=0, blur_fade_kimg=0):
         self.r1_gamma = r1_gamma
-        self.trainer = AdversarialTraining(G, D)
+        self.trainer = AdversarialTraining(G, D, Laziness=8)
 
-    def accumulate_gradients(self, phase, real_img, gen_z, gain, cur_nimg):
+    def accumulate_gradients(self, phase, real_img, gen_z, gain, cur_nimg, batch_idx):
         # G
         if phase == 'G':
             AdversarialLoss, RelativisticLogits = self.trainer.AccumulateGeneratorGradients(gen_z, real_img, gain)
@@ -29,11 +29,13 @@ class BaselineGANLoss:
             
         # D
         if phase == 'D':
-            AdversarialLoss, RelativisticLogits, R1Penalty, R2Penalty = self.trainer.AccumulateDiscriminatorGradients(gen_z, real_img, self.r1_gamma, gain)
+            AdversarialLoss, RelativisticLogits, R1Penalty, R2Penalty = self.trainer.AccumulateDiscriminatorGradients(gen_z, real_img, batch_idx, self.r1_gamma, gain)
             
             training_stats.report('Loss/scores/real', RelativisticLogits)
             training_stats.report('Loss/signs/real', RelativisticLogits.sign())
             training_stats.report('Loss/D/loss', AdversarialLoss)
-            training_stats.report('Loss/r1_penalty', R1Penalty)
-            training_stats.report('Loss/r2_penalty', R2Penalty)
+            if R1Penalty is not None:
+                training_stats.report('Loss/r1_penalty', R1Penalty)
+            if R2Penalty is not None:
+                training_stats.report('Loss/r2_penalty', R2Penalty)
 #----------------------------------------------------------------------------
