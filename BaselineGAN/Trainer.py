@@ -12,11 +12,11 @@ class AdversarialTraining:
         return Gradient.square().sum([1, 2, 3])
         
     def AccumulateGeneratorGradients(self, Noise, RealSamples, Scale=1, Preprocessor=lambda x: x):
-        FakeSamples = Preprocessor(self.Generator(Noise))
-        RealSamples = Preprocessor(RealSamples).detach()
+        FakeSamples = self.Generator(Noise)
+        RealSamples = RealSamples.detach()
         
-        FakeLogits = self.Discriminator(FakeSamples)
-        RealLogits = self.Discriminator(RealSamples)
+        FakeLogits = self.Discriminator(Preprocessor(FakeSamples))
+        RealLogits = self.Discriminator(Preprocessor(RealSamples))
         
         RelativisticLogits = FakeLogits - RealLogits
         AdversarialLoss = nn.functional.softplus(-RelativisticLogits)
@@ -26,11 +26,11 @@ class AdversarialTraining:
         return [x.detach() for x in [AdversarialLoss, RelativisticLogits]]
     
     def AccumulateDiscriminatorGradients(self, Noise, RealSamples, Gamma, Scale=1, Preprocessor=lambda x: x):
-        RealSamples = Preprocessor(RealSamples).detach().requires_grad_(True)
-        FakeSamples = Preprocessor(self.Generator(Noise)).detach().requires_grad_(True)
+        RealSamples = RealSamples.detach().requires_grad_(True)
+        FakeSamples = self.Generator(Noise).detach().requires_grad_(True)
         
-        RealLogits = self.Discriminator(RealSamples)
-        FakeLogits = self.Discriminator(FakeSamples)
+        RealLogits = self.Discriminator(Preprocessor(RealSamples))
+        FakeLogits = self.Discriminator(Preprocessor(FakeSamples))
         
         R1Penalty = AdversarialTraining.ZeroCenteredGradientPenalty(RealSamples, RealLogits)
         R2Penalty = AdversarialTraining.ZeroCenteredGradientPenalty(FakeSamples, FakeLogits)
