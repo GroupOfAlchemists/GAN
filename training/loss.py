@@ -15,18 +15,18 @@ import torch
 #----------------------------------------------------------------------------
 
 class BaselineGANLoss:
-    def __init__(self, device, G, D, augment_pipe=None, r1_gamma=10, style_mixing_prob=0, pl_weight=0, pl_batch_shrink=2, pl_decay=0.01, pl_no_weight_grad=False, blur_init_sigma=0, blur_fade_kimg=0):
-        self.r1_gamma = r1_gamma
+    def __init__(self, device, G, D, augment_pipe=None, gamma=10, style_mixing_prob=0, pl_weight=0, pl_batch_shrink=2, pl_decay=0.01, pl_no_weight_grad=False, blur_init_sigma=0, blur_fade_kimg=0):
+        self.gamma = gamma
         self.trainer = AdversarialTraining(G, D)
         if augment_pipe is not None:
             self.preprocessor = lambda x: augment_pipe(x.to(torch.float32)).to(x.dtype)
         else:
             self.preprocessor = lambda x: x
         
-    def accumulate_gradients(self, phase, real_img, gen_z, gain, cur_nimg):
+    def accumulate_gradients(self, phase, real_img, real_c, gen_z, gain, cur_nimg):
         # G
         if phase == 'G':
-            AdversarialLoss, RelativisticLogits = self.trainer.AccumulateGeneratorGradients(gen_z, real_img, gain, self.preprocessor)
+            AdversarialLoss, RelativisticLogits = self.trainer.AccumulateGeneratorGradients(gen_z, real_img, real_c, gain, self.preprocessor)
             
             training_stats.report('Loss/scores/fake', RelativisticLogits)
             training_stats.report('Loss/signs/fake', RelativisticLogits.sign())
@@ -34,7 +34,7 @@ class BaselineGANLoss:
             
         # D
         if phase == 'D':
-            AdversarialLoss, RelativisticLogits, R1Penalty, R2Penalty = self.trainer.AccumulateDiscriminatorGradients(gen_z, real_img, self.r1_gamma, gain, self.preprocessor)
+            AdversarialLoss, RelativisticLogits, R1Penalty, R2Penalty = self.trainer.AccumulateDiscriminatorGradients(gen_z, real_img, real_c, self.gamma, gain, self.preprocessor)
             
             training_stats.report('Loss/scores/real', RelativisticLogits)
             training_stats.report('Loss/signs/real', RelativisticLogits.sign())

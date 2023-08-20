@@ -125,47 +125,45 @@ class DiscriminatorStage(nn.Module):
         return x
     
 class Generator(nn.Module):
-    def __init__(self, NoiseDimension, WidthPerStage, CardinalityPerStage, BlocksPerStage, ExpansionFactor, KernelSize=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, NoiseDimension, WidthPerStage, CardinalityPerStage, BlocksPerStage, ExpansionFactor, ConditionDimension=None, ConditionEmbeddingDimension=0, KernelSize=3, ResamplingFilter=[1, 2, 1]):
         super(Generator, self).__init__()
         
-        MainLayers = [GeneratorStage(NoiseDimension, WidthPerStage[0], CardinalityPerStage[0], BlocksPerStage[0], ExpansionFactor, KernelSize)]
+        MainLayers = [GeneratorStage(NoiseDimension + ConditionEmbeddingDimension, WidthPerStage[0], CardinalityPerStage[0], BlocksPerStage[0], ExpansionFactor, KernelSize)]
         MainLayers += [GeneratorStage(WidthPerStage[x], WidthPerStage[x + 1], CardinalityPerStage[x + 1], BlocksPerStage[x + 1], ExpansionFactor, KernelSize, ResamplingFilter) for x in range(len(WidthPerStage) - 1)]
-        
-        # temp workaround for mixed precision training
-        MainLayers[-1].DataType = torch.bfloat16
-        MainLayers[-2].DataType = torch.bfloat16
-        MainLayers[-3].DataType = torch.bfloat16
-        MainLayers[-4].DataType = torch.bfloat16
         
         self.MainLayers = nn.ModuleList(MainLayers)
         self.AggregationLayer = Convolution(WidthPerStage[-1], 3, KernelSize=1)
         
-    def forward(self, x):
+        if ConditionDimension is not None:
+            self.EmbeddingLayer = MSRInitializer(nn.Linear(ConditionDimension, ConditionEmbeddingDimension, bias=False))
+        
+    def forward(self, x, y=None):
+        x = torch.cat([x, self.EmbeddingLayer(y)], dim=1) if hasattr(self, 'EmbeddingLayer') else x
+        
         for Layer in self.MainLayers:
             x = Layer(x)
         
         return self.AggregationLayer(x)
     
 class Discriminator(nn.Module):
-    def __init__(self, WidthPerStage, CardinalityPerStage, BlocksPerStage, ExpansionFactor, KernelSize=3, ResamplingFilter=[1, 2, 1]):
+    def __init__(self, WidthPerStage, CardinalityPerStage, BlocksPerStage, ExpansionFactor, ConditionDimension=None, ConditionEmbeddingDimension=0, KernelSize=3, ResamplingFilter=[1, 2, 1]):
         super(Discriminator, self).__init__()
         
         MainLayers = [DiscriminatorStage(WidthPerStage[x], WidthPerStage[x + 1], CardinalityPerStage[x], BlocksPerStage[x], ExpansionFactor, KernelSize, ResamplingFilter) for x in range(len(WidthPerStage) - 1)]
-        MainLayers += [DiscriminatorStage(WidthPerStage[-1], 1, CardinalityPerStage[-1], BlocksPerStage[-1], ExpansionFactor, KernelSize)]
-        
-        # temp workaround for mixed precision training
-        MainLayers[0].DataType = torch.bfloat16
-        MainLayers[1].DataType = torch.bfloat16
-        MainLayers[2].DataType = torch.bfloat16
-        MainLayers[3].DataType = torch.bfloat16
+        MainLayers += [DiscriminatorStage(WidthPerStage[-1], 1 if ConditionDimension is None else ConditionEmbeddingDimension, CardinalityPerStage[-1], BlocksPerStage[-1], ExpansionFactor, KernelSize)]
         
         self.ExtractionLayer = Convolution(3, WidthPerStage[0], KernelSize=1)
         self.MainLayers = nn.ModuleList(MainLayers)
         
-    def forward(self, x):
+        if ConditionDimension is not None:
+            self.EmbeddingLayer = MSRInitializer(nn.Linear(ConditionDimension, ConditionEmbeddingDimension, bias=False), ActivationGain=1 / math.sqrt(ConditionEmbeddingDimension))
+        
+    def forward(self, x, y=None):
         x = self.ExtractionLayer(x.to(self.MainLayers[0].DataType))
         
         for Layer in self.MainLayers:
             x = Layer(x)
+        
+        x = (x * self.EmbeddingLayer(y)).sum(dim=1, keepdim=True) if hasattr(self, 'EmbeddingLayer') else x
         
         return x.view(x.shape[0])

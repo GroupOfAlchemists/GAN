@@ -1,21 +1,44 @@
+import torch
 import torch.nn as nn
+import copy
 import BaselineGAN.Networks
 
 class Generator(nn.Module):
     def __init__(self, *args, **kw):
         super(Generator, self).__init__()
         
-        self.Model = BaselineGAN.Networks.Generator(*args, **kw)
-        self.z_dim = kw['NoiseDimension']
+        config = copy.deepcopy(kw)
+        del config['FP16Stages']
+        del config['c_dim']
         
-    def forward(self, x):
-        return self.Model(x)
+        if kw['c_dim'] != 0:
+            config['ConditionDimension'] = kw['c_dim']
+        
+        self.Model = BaselineGAN.Networks.Generator(*args, **config)
+        self.z_dim = kw['NoiseDimension']
+        self.c_dim = kw['c_dim']
+        
+        for x in kw['FP16Stages']:
+            self.Model.MainLayers[x].DataType = torch.bfloat16
+        
+    def forward(self, x, c):
+        return self.Model(x, c)
     
 class Discriminator(nn.Module):
     def __init__(self, *args, **kw):
         super(Discriminator, self).__init__()
         
-        self.Model = BaselineGAN.Networks.Discriminator(*args, **kw)
+        config = copy.deepcopy(kw)
+        del config['FP16Stages']
+        del config['c_dim']
         
-    def forward(self, x):
-        return self.Model(x)
+        if kw['c_dim'] != 0:
+            config['ConditionDimension'] = kw['c_dim']
+        
+        self.Model = BaselineGAN.Networks.Discriminator(*args, **config)
+        
+        for x in kw['FP16Stages']:
+            self.Model.MainLayers[x].DataType = torch.bfloat16
+        
+    def forward(self, x, c):
+        return self.Model(x, c)
