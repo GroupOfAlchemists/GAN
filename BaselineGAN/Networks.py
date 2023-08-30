@@ -28,7 +28,7 @@ class ResidualBlock(nn.Module):
         
         ExpandedChannels = InputChannels * ExpansionFactor
         
-        self.LinearLayer1 = Convolution(InputChannels, ExpandedChannels, KernelSize=1, ActivationGain=0.1 * BiasedActivation.Gain)
+        self.LinearLayer1 = Convolution(InputChannels, ExpandedChannels, KernelSize=1, ActivationGain=BiasedActivation.Gain)
         self.LinearLayer2 = Convolution(ExpandedChannels, ExpandedChannels, KernelSize=KernelSize, Groups=Cardinality, ActivationGain=BiasedActivation.Gain)
         self.LinearLayer3 = Convolution(ExpandedChannels, InputChannels, KernelSize=1, ActivationGain=0)
         
